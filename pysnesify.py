@@ -1,8 +1,8 @@
-#!/usr/bin/python
+#!/bin/env python
 # -*- coding: utf-8 -*-
 #
 # PySNESify
-# Copyright (C) 2015, William Edwards <shadowapex@gmail.com>,
+# Copyright (C) 2021, William Edwards <shadowapex@gmail.com>,
 #
 # PySNESify is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,63 +25,89 @@
 # https://gum.co/lqdY
 #
 
+import argparse
+import os
 import sys
-import getopt
-from PIL import Image
 
-def show_help():
-    print "Usage:"
-    print "  %s filename.png [output.png]" % sys.argv[0]
-    print ""
-    print "Arguments:"
-    print "  -h      show this help message and exit"
-    print ""
-
-def round_to_multiple(x, base=8):
-    return int(base * round(float(x)/base))
+import cv2
+import numpy as np
 
 
-def round_rgb(x, base=8):
-    x = round_to_multiple(x, base)
-    if x > 255:
-        x = 255
-    elif x < 0:
-        x = 0
-    return x
+# Returns the color with the closest euclidean distance in color space.
+def closest_color(pixel, palette):
+    _, size, _ = palette.shape
+    value = np.array((0, 0, 0))
+    closest = 100000
+    for i in range(size):
+        color = palette[0, i]
+        dist = np.linalg.norm(color-pixel)
+        if dist < closest:
+            closest = dist
+            value = color
+    return value
 
-
-def snesify(filename):
-    image = Image.open(filename)
-    image = image.convert("RGBA")
-    datas = image.getdata()
-
-    new_data = []
-    for pixel in datas:
-        r = round_rgb(pixel[0])
-        g = round_rgb(pixel[1])
-        b = round_rgb(pixel[2])
-        a = round_rgb(pixel[3])
-
-        new_pixel = (r, g, b, a)
-        new_data.append(new_pixel)
-
-    image.putdata(new_data)
-
-    return image
+def snesify(filename, palette, technique='bgr'):
+    # Read input img
+    in_img = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
+    height, width, _ = in_img.shape
+    # extract alpha channel
+    alpha = in_img[:,:,3]
+    
+    # Read the palette image
+    palette_img = cv2.imread(palette)
+    
+    # Convert to HSV
+    if technique == "bgr":
+        in_img_conv = cv2.cvtColor(in_img, cv2.COLOR_BGR2BGRA)
+        palette_conv = cv2.cvtColor(palette_img, cv2.COLOR_BGR2BGRA)
+    elif technique == "hsv":
+        in_img_conv = cv2.cvtColor(in_img, cv2.COLOR_BGR2HSV)
+        palette_conv = cv2.cvtColor(palette_img, cv2.COLOR_BGR2HSV)
+    else:
+        print("Invalid technique provided")
+        sys.exit(1)
+    
+    # Loop through all pixels of the image
+    for y in range(height):
+        for x in range(width):
+            pixel = in_img_conv[y, x]
+            in_img_conv[y, x] = closest_color(pixel, palette_conv)
+    
+    # Convert the image back to BGRA
+    if technique == "bgr":
+        out_img = in_img_conv
+    elif technique == "hsv":
+        bgr_img = cv2.cvtColor(in_img_conv, cv2.COLOR_HSV2BGR)
+        out_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2BGRA)
+    else:
+        print("Invalid technique provided")
+        sys.exit(1)
+    
+    # put alpha back into bgr_new
+    out_img[:,:,3] = alpha
+    
+    # Return the image file
+    return out_img
 
 
 if __name__ == "__main__":
+    # Define the arguments
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('filename', help="Path to file of the image to convert")
+    parser.add_argument('palette', help="Path to palette image file")
+    parser.add_argument('-t', '--technique', default="bgr", help="Technique to use (bgr, hsv)")
+    parser.add_argument('-o', '--output', help="Output filename")
+    
+    # Parse our arguments
+    args = parser.parse_args()
 
-    if len(sys.argv[1:]) < 1 or "-h" in sys.argv[1:] or len(sys.argv[1:]) > 2:
-        show_help()
-        sys.exit(2)
-
-    filename = sys.argv[1:][0]
-
-    if len(sys.argv[1:]) is 1:
-        output = "SNES_" + filename
+    # SNESify the image according to the given palette
+    image = snesify(args.filename, args.palette, args.technique)
+    if args.output:
+        output = args.output
     else:
-        output = sys.argv[1:][1]
-
-    image = snesify(filename)
-    image.save(output)
+        palette = os.path.splitext(os.path.split(args.palette)[-1])[0]
+        file, ext = os.path.splitext(os.path.split(args.filename)[-1])
+        output = "{}_{}_{}{}".format(file, palette, args.technique, ext)
+    print("Saving to: {}".format(output))
+    cv2.imwrite(output, image)
